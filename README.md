@@ -246,7 +246,7 @@ Run notebooks in order:
 
 ## Report
 
-A full academic project report is included:
+A full project report is included:
 
 - [reports/credit_risk_modeling_report.pdf](reports/credit_risk_modeling_report.pdf)
 - [reports/credit_risk_modeling_report.tex](reports/credit_risk_modeling_report.tex)
