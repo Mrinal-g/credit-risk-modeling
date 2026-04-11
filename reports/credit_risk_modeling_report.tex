@@ -1,0 +1,476 @@
+\documentclass[12pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{setspace}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{amsmath}
+\usepackage{pdflscape}
+\usepackage{xcolor}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue
+}
+
+\setstretch{1.2}
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.5em}{}
+
+\title{\textbf{End-to-End Credit Risk Modeling with LendingClub Data}\\
+\large Probability of Default, Loss Given Default, Exposure at Default,\\ Expected Loss, and IFRS 9 Style Staging}
+\author{Mrinal Gupta}
+\date{\today}
+
+\begin{document}
+
+\pagenumbering{gobble}
+\begin{titlepage}
+    \centering
+    \vspace*{1.5cm}
+    {\Large Academic Project Report\par}
+    \vspace{1.5cm}
+    {\huge \textbf{End-to-End Credit Risk Modeling with LendingClub Data}\par}
+    \vspace{0.7cm}
+    {\Large Probability of Default, Loss Given Default, Exposure at Default,\\ Expected Loss, and IFRS 9 Style Staging\par}
+    \vspace{2cm}
+    {\large Mrinal Gupta\par}
+    \vspace{0.3cm}
+    {\large M.S. Financial Engineering\par}
+    {\large Stevens Institute of Technology\par}
+    \vfill
+    {\large \today\par}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+\pagenumbering{arabic}
+
+\section{Abstract}
+
+This project develops an end-to-end retail credit risk modeling framework using LendingClub loan data. The workflow covers exploratory data analysis, preprocessing, feature engineering, probability of default (PD) modeling, model validation, loss given default (LGD), exposure at default (EAD), expected loss (EL), IFRS 9 style stage classification, stress testing, and final scoring on unseen loans. The core PD model is an XGBoost classifier evaluated using rolling time-window validation to reflect real deployment conditions rather than random train-test splitting. Model validation combines machine learning metrics and credit-risk-specific diagnostics, including ROC-AUC, the Kolmogorov-Smirnov (KS) statistic, the Population Stability Index (PSI), threshold analysis, and SHAP explainability.
+
+The project demonstrates moderate but credible predictive performance on out-of-time validation, with a mean ROC-AUC of 0.6174 and a final-window ROC-AUC of 0.6320. Score stability is strong, with PSI of 0.026. The broader portfolio framework extends the analysis beyond classification by calculating expected loss as $PD \times LGD \times EAD$ and allocating loans to Stage 1, Stage 2, and Stage 3 style buckets. The project also documents the identification and correction of five preprocessing bugs and one inference-pipeline issue, demonstrating practical model governance awareness alongside the analytical work.
+
+\section{Introduction}
+
+Credit risk modeling is a core function in consumer lending, banking, and portfolio risk management. Lenders need to estimate the likelihood that a borrower will default, quantify the severity of loss if that default occurs, and understand how those risks aggregate at the portfolio level. In practice, a useful credit risk workflow extends beyond classification accuracy and includes stability monitoring, interpretability, loss estimation, and risk segmentation.
+
+This project builds such a workflow on LendingClub consumer loan data. The analysis starts with raw loan-level records and progresses through preprocessing, feature engineering, predictive modeling, validation, expected loss estimation, and final portfolio scoring. A central goal is to construct a framework that is both analytically sound and easy to explain in an academic or recruiter-facing setting.
+
+The project is organized into six notebooks:
+
+\begin{enumerate}[leftmargin=1.5em]
+    \item Exploratory data analysis and cleaning
+    \item Feature engineering
+    \item Model training with rolling time-window cross-validation
+    \item Model validation and SHAP explainability
+    \item LGD, EAD, expected loss, IFRS 9 staging, and stress testing
+    \item Final predictions on unseen loans
+\end{enumerate}
+
+\section{Objectives}
+
+The project was designed to answer the following questions:
+
+\begin{enumerate}[leftmargin=1.5em]
+    \item Which borrowers are most likely to default early?
+    \item Which borrower and loan features are the strongest drivers of that risk?
+    \item How well do the models generalize over time?
+    \item What expected loss does the model imply at the portfolio level?
+    \item How can loans be segmented into IFRS 9 style risk stages?
+\end{enumerate}
+
+The expected loss framework used throughout the project is:
+
+\begin{equation}
+    EL = PD \times LGD \times EAD
+\end{equation}
+
+\section{Dataset Description}
+
+The project uses LendingClub loan-level data obtained from Kaggle. The dataset contains borrower attributes, loan terms, credit history information, delinquency-related fields, and target variables for early default and return.
+
+\subsection{Dataset Summary}
+
+\begin{table}[H]
+\centering
+\caption{Raw Dataset Summary}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Raw observations & 933,160 \\
+Raw columns & 37 \\
+Date range & Jan 2008 to Dec 2016 \\
+Early default rate & 5.29\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Missing Data}
+
+\begin{table}[H]
+\centering
+\caption{Missing-Value Treatments}
+\begin{tabular}{lll}
+\toprule
+Variable & Missing \% & Treatment \\
+\midrule
+\texttt{mths\_since\_last\_delinq} & 49.75\% & Filled with sentinel value 300 (no known delinquency) \\
+\texttt{emp\_length} & 6.30\% & Mode imputation, then numeric extraction \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The missingness profile is concentrated in two variables and manageable with domain-informed imputation, preserving all 933,160 observations.
+
+\section{Methodology}
+
+\subsection{Preprocessing}
+
+The preprocessing pipeline is implemented in \texttt{src/preprocessing.py} and includes:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item sorting observations chronologically by issue date,
+    \item handling missing values using domain-informed imputations,
+    \item removing negative debt-to-income observations,
+    \item building stable categorical encodings using fixed dictionaries,
+    \item generating reference tables for region- and purpose-based features used at scoring time.
+\end{itemize}
+
+\subsubsection{Preprocessing Bugs Identified and Fixed}
+
+During development, five preprocessing issues inherited from an earlier implementation were identified and corrected. These are documented here as they are material to the validity of the final results.
+
+\begin{table}[H]
+\centering
+\caption{Preprocessing Issues and Fixes}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.30\textwidth} X}
+\toprule
+Issue & Fix Applied \\
+\midrule
+\texttt{issue\_d} one-hot encoded & Removed from \texttt{CATEGORICAL\_FEATURES}; date features created zero-vectors for 2017 test loans, inflating PD \\
+\texttt{annual\_income\_squared} & Replaced with \texttt{log\_annual\_inc}; squared values amplified small income shifts by $\sim$4$\times$ after StandardScaler \\
+\texttt{purpose\_encoded} via \texttt{cat.codes} & Replaced with fixed dictionary; integer mapping was unstable across datasets (11/14 codes misaligned on test set) \\
+\texttt{sub\_grade\_encoded} via \texttt{cat.codes} & Replaced with fixed dictionary for same reason \\
+Dataset-relative features recomputed from test data & \texttt{fit\_reference\_tables()} persists training aggregates; \texttt{create\_features()} accepts \texttt{ref} parameter at scoring time \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Feature Engineering}
+
+The engineered feature set focused on affordability, pricing, and credit quality. After preprocessing and feature creation, the modeling dataset contained 64 columns, including 24 numerical modeling features and 6 categorical features expanded to 1,487 total features after one-hot encoding.
+
+\begin{table}[H]
+\centering
+\caption{Examples of Engineered Features}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.23\textwidth} X}
+\toprule
+Category & Example Features \\
+\midrule
+Log transforms & \texttt{log\_loan\_amnt}, \texttt{log\_dti}, \texttt{log\_revol\_bal}, \texttt{log\_annual\_inc} \\
+Credit quality & \texttt{fico\_avg}, \texttt{fico\_int\_rate\_interaction}, \texttt{fico\_int\_rate\_ratio} \\
+Affordability ratios & \texttt{loan\_amnt\_to\_income\_ratio}, \texttt{payment\_to\_income\_ratio} \\
+Interactions & \texttt{grade\_dti\_interaction}, \texttt{purpose\_loan\_amnt\_interaction}, \texttt{installment\_fico\_interaction} \\
+Relative features & \texttt{relative\_int\_rate}, \texttt{loan\_to\_purpose\_amnt\_ratio}, \texttt{composite\_loan\_feature} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Validation Design}
+
+The PD model uses a rolling time-window design with:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item 36-month training windows,
+    \item 12-month forward test windows,
+    \item 12-month step size,
+    \item 5 windows total spanning Jan 2008 to Dec 2016.
+\end{itemize}
+
+This approach is appropriate for credit risk because it better reflects deployment conditions than a random split. Borrower composition, pricing, and macro conditions evolve through time, so chronological evaluation is critical. Within each window, class imbalance was handled by applying SMOTE to a capped training subset before XGBoost fitting.
+
+\subsection{Modeling Choices}
+
+\begin{table}[H]
+\centering
+\caption{Modeling Framework}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.24\textwidth} >{\raggedright\arraybackslash}p{0.22\textwidth} X}
+\toprule
+Task & Model & Motivation \\
+\midrule
+Probability of Default & XGBoost classifier & Strongest generalization across time windows \\
+Loan Return & Ridge regression & Selected after LightGBM showed negative out-of-sample R² across all windows \\
+Loss Given Default & Ridge regression & Interpretable baseline for severity modeling \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Results}
+
+\subsection{PD Model Performance}
+
+\begin{table}[H]
+\centering
+\caption{PD Model Validation Summary (Post-Fix Retraining)}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Mean out-of-sample ROC-AUC & 0.6174 \\
+Final-window ROC-AUC & 0.6320 \\
+KS statistic & 0.189 \\
+PSI (train $\rightarrow$ test) & 0.026 (Stable) \\
+F1-optimal threshold & 0.051 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Rolling Out-of-Sample ROC-AUC by Window}
+\begin{tabular}{lr}
+\toprule
+Window & ROC-AUC \\
+\midrule
+0 & 0.6193 \\
+1 & 0.5899 \\
+2 & 0.6185 \\
+3 & 0.6271 \\
+4 & 0.6320 \\
+\midrule
+Mean & 0.6174 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The PD model shows moderate discrimination. While not high-performing in an absolute sense, these results are credible for a noisy, imbalanced retail lending dataset evaluated out of time. The positive trend across windows (0.5899 to 0.6320) is consistent with the model benefiting from larger training sets in later windows. PSI of 0.026 confirms that score distributions are stable between training and test periods.
+
+\subsection{Return Model Performance}
+
+\begin{table}[H]
+\centering
+\caption{Return Model Summary}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+In-sample $R^2$ & 0.038 \\
+Out-of-sample $R^2$ & $-0.003$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Return prediction proved difficult. The near-zero and slightly negative out-of-sample $R^2$ reflects the inherent difficulty of forecasting net loan return, which is driven by prepayment, recovery rates, and residual timing effects not fully captured by the available features. This result is presented honestly as a weak baseline rather than a strong forecasting model.
+
+\subsection{LGD Model Performance}
+
+\begin{table}[H]
+\centering
+\caption{LGD Model Summary}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Defaulted loans used & 49,349 \\
+Mean recovery rate & 25.30\% \\
+Mean LGD & 74.70\% \\
+Out-of-sample $R^2$ & 0.006 \\
+Out-of-sample MAE & 0.091 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The LGD model has limited predictive strength, effectively predicting a near-constant severity of approximately 75\%. This reflects a genuine characteristic of the dataset: most defaulted loans have limited recovery, and the available features do not strongly separate low-recovery from high-recovery defaults. The LGD is best framed as an illustrative severity layer within the portfolio framework rather than a precise individual loan predictor.
+
+\section{Validation and Explainability}
+
+\subsection{KS and PSI}
+
+\begin{table}[H]
+\centering
+\caption{Credit-Risk Validation Metrics}
+\begin{tabular}{lll}
+\toprule
+Metric & Value & Interpretation \\
+\midrule
+KS statistic & 0.189 & Acceptable rank-ordering of default vs non-default risk \\
+PSI & 0.026 & Stable score distribution (PSI $<$ 0.10 is the standard threshold) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The KS statistic confirms useful rank-ordering ability. PSI of 0.026 is well below the 0.10 stability threshold, indicating that the model produces consistent score distributions across the training and test periods after preprocessing was corrected.
+
+\subsection{Threshold Analysis}
+
+The project compares an F1-optimized threshold (0.051) with a cost-optimal threshold calibrated for a 5$\times$ false positive cost relative to false negatives. This is valuable because a well-ranked probability model and a useful decision rule are related but distinct considerations. In practice, the appropriate threshold depends on the business cost of approving risky loans versus declining creditworthy applicants.
+
+\subsection{SHAP Analysis}
+
+SHAP was used to identify the strongest drivers of prediction. The following features were among the highest-importance variables across the PD model:
+
+\begin{table}[H]
+\centering
+\caption{Selected SHAP Drivers}
+\begin{tabular}{ll}
+\toprule
+Feature & Interpretation \\
+\midrule
+\texttt{fico\_avg} & Borrower credit quality \\
+\texttt{loan\_amnt\_to\_income\_ratio} & Debt burden relative to income \\
+\texttt{payment\_to\_income\_ratio} & Installment affordability \\
+\texttt{fico\_int\_rate\_interaction} & Credit quality versus loan pricing \\
+\texttt{grade\_dti\_interaction} & Risk grade versus indebtedness \\
+\texttt{composite\_loan\_feature} & Combined structural risk signal \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These results are economically intuitive: borrower credit quality, debt burden relative to income, and the relationship between risk grade and interest rate are the dominant signals. This supports using the model as a meaningful risk-ranking tool even at moderate AUC levels.
+
+\section{Portfolio Risk Framework}
+
+\subsection{Expected Loss on the Final Validated Test Window}
+
+\begin{table}[H]
+\centering
+\caption{Expected Loss Summary on Final Validated Test Window (NB05)}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Loans in test window & 282,138 \\
+Mean PD & 4.29\% \\
+Mean LGD & 75.15\% \\
+Mean EAD & \$12,803 \\
+Total EAD & \$3,612,321,825 \\
+Total Expected Loss & \$116,347,162 \\
+Portfolio EL Rate & 3.22\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{IFRS 9 Style Stage Allocation}
+
+\begin{table}[H]
+\centering
+\caption{IFRS 9 Stage Allocation on Final Validated Test Window}
+\begin{tabular}{lrrrr}
+\toprule
+Stage & Loans & Total EAD & EAD Share & EL Rate \\
+\midrule
+Stage 1 (PD $<$ 10\%) & 250,510 & \$3.208B & 88.82\% & 1.78\% \\
+Stage 2 (10\% $\leq$ PD $<$ 30\%) & 27,428 & \$0.350B & 9.69\% & 12.11\% \\
+Stage 3 (PD $\geq$ 30\%) & 4,200 & \$0.054B & 1.50\% & 31.32\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Although Stage 3 represents only 1.5\% of exposure, it contributes disproportionately to expected loss (EL rate 31.3\% vs 1.8\% for Stage 1). This concentration pattern is consistent with real-world credit portfolio behavior, where a small tail of high-risk loans drives a large share of expected credit losses.
+
+\section{Final Scoring on Unseen Loans}
+
+\subsection{Inference Pipeline Issue and Resolution}
+
+An important technical lesson in the project was identifying and correcting an inference mismatch in the final scoring notebook.
+
+\subsubsection{Problem}
+
+XGBoost was trained on dense arrays produced after SMOTE processing. Final scoring initially passed sparse matrices directly from the \texttt{ColumnTransformer} preprocessing pipeline. Sparse matrices represent absent entries as structural zeros; XGBoost interprets these through its missing-value paths (learned during training to route NaN values), and routes nearly all observations toward the majority direction --- which in SMOTE-balanced training data causes inflated PD predictions approaching 99\%.
+
+\subsubsection{Fix}
+
+The transformed feature matrix was converted to dense via \texttt{.toarray()} before calling \texttt{predict\_proba()} in the final prediction notebook. This is a single-line fix but has large predictive consequences.
+
+\subsubsection{Outcome}
+
+After the correction:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item mean predicted PD returned to a realistic range consistent with validation results,
+    \item IFRS 9 stage shares became sensible (Stage 1 the majority),
+    \item final portfolio expected loss outputs became suitable for reporting.
+\end{itemize}
+
+This finding is valuable because it demonstrates practical deployment awareness: identical preprocessing and model code can produce radically different predictions depending on whether data representations are correctly matched to the format the model was trained on.
+
+\subsection{Final Scoring Results}
+
+\begin{table}[H]
+\centering
+\caption{Final Scoring Results on Unseen Loans (NB06)}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Loans scored & 112,858 \\
+Mean LGD & 75.22\% \\
+Mean EAD & \$12,392 \\
+Total portfolio EAD & \$1,398,481,550 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion}
+
+The project succeeds as a broad and realistic credit risk prototype. Its major strengths are:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item an end-to-end scope that goes beyond binary classification to cover the full $EL = PD \times LGD \times EAD$ chain,
+    \item time-based validation rather than random splitting, which better reflects deployment conditions,
+    \item use of business-aligned diagnostics such as KS, PSI, expected loss, and stage allocation,
+    \item explainability through SHAP, with economically intuitive feature importance rankings,
+    \item explicit identification, documentation, and correction of five preprocessing bugs and one inference-pipeline issue --- demonstrating model governance thinking, not only modeling ability.
+\end{itemize}
+
+Several limitations remain and should be acknowledged:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item PD performance is moderate rather than strong (mean AUC 0.617). Consumer credit risk is inherently difficult to predict from application-time features alone.
+    \item The return and LGD models are weak predictors, effectively near-constant. Stronger severity modeling would require richer recovery data.
+    \item IFRS 9 staging is simplified and based on absolute PD thresholds rather than full origination-vs-current PD migration logic.
+    \item The unseen test set (\texttt{lc\_loan\_test.csv}, Jan--May 2017) is unlabeled, so there is no ground truth to confirm that final PD scores are accurate for that cohort.
+\end{itemize}
+
+\section{Conclusion}
+
+This project demonstrates a complete credit risk workflow using LendingClub data, combining predictive modeling, model validation, explainability, portfolio loss estimation, and stage-based segmentation. The PD model achieved moderate but credible out-of-time performance with stable score distributions (PSI 0.026). The portfolio risk layer translated model outputs into expected loss and stage allocation in a way that is easy to explain to academic, recruiter, or stakeholder audiences.
+
+The project is best presented as a strong analytical prototype rather than a production-ready risk engine. Its value lies not only in the models themselves, but also in the breadth of the workflow, the use of credit-risk-specific validation metrics, and the explicit identification and resolution of real preprocessing and inference bugs before finalizing results.
+
+\section*{Appendix: Recommended Presentation Figures}
+
+The following notebook figures are recommended for a slide deck or oral presentation:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item missing-value chart from Notebook 01,
+    \item default class balance and default-rate-by-grade plots from Notebook 01,
+    \item log-transform and feature-correlation visuals from Notebook 02,
+    \item rolling ROC-AUC trend plot from Notebook 03,
+    \item Precision-Recall and F1 vs. threshold plot from Notebook 03,
+    \item KS curve and PSI chart from Notebook 04,
+    \item SHAP bar chart and SHAP summary plot from Notebook 04,
+    \item expected loss breakdown and IFRS 9 stage plots from Notebook 05.
+\end{itemize}
+
+\end{document}

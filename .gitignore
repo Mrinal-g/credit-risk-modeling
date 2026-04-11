@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local data artifacts
+data/raw/
+data/processed/
+data/outputs/
+
+# Trained artifacts
+models/
+
+# OS files
+.DS_Store
+
+# LaTeX build artifacts (keep .tex and .pdf tracked)
+reports/*.aux
+reports/*.log
+reports/*.fdb_latexmk
+reports/*.fls
+reports/*.out
+reports/*.toc
